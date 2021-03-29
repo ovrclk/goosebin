@@ -1,4 +1,10 @@
-{{define "showPaste"}}<!DOCTYPE html><html>{{template "head"}}<body>
+{{define "showPaste"}}<!DOCTYPE html><html>{{template "head" .}}<body>
+
+<ul>
+<li><tt>{{.path}}</tt></li>
+<li>This paste disappears in {{.ttl}}</li>
+<li><a href="{{.rawPath}}">View as raw</a></li>
+</ul>
 
 <p><pre>{{.paste}}</pre></p>
 

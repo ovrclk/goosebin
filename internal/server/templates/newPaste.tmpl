@@ -1,10 +1,16 @@
-{{define "newPaste"}}<!DOCTYPE html><html>{{template "head"}}<body>
+{{define "newPaste"}}<!DOCTYPE html><html>{{template "head" .}}<body>
 
+<p>Paste text into the box below and then click the button to create a new paste.
+Your paste may not exceed {{.maximumSize}}.</p>
+
+<div>
 <form method="POST">
 <textarea name="paste" rows="4" cols="50"></textarea>
 
-<input type="submit" value="Create Paste"></input>
+<input type="submit" value="Create Paste" style="display:block;"></input>
 </form>
+</div>
+
 
 
 </body></html>{{end}}

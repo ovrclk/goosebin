@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/base64"
@@ -9,6 +11,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/mux"
 	"html/template"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -19,12 +22,20 @@ type pasteKey struct {
 	sum []byte
 }
 
+func (pk pasteKey) sumAsString() string {
+	return base64.RawURLEncoding.EncodeToString(pk.sum)
+}
+
 func (pk pasteKey) redisKey() string {
-	return fmt.Sprintf("paste/%s", base64.RawURLEncoding.EncodeToString(pk.sum))
+	return fmt.Sprintf("paste/%s", pk.sumAsString())
 }
 
 func (pk pasteKey) path() string {
-	return fmt.Sprintf("/paste/%s", base64.RawURLEncoding.EncodeToString(pk.sum))
+	return fmt.Sprintf("/paste/%s",pk.sumAsString())
+}
+
+func (pk pasteKey) rawPath() string {
+	return fmt.Sprintf("/paste/%s/raw", pk.sumAsString())
 }
 
 func keyForPaste(value string) pasteKey {
@@ -77,6 +88,47 @@ func (rh *requestHandler) createPaste(rw http.ResponseWriter, req *http.Request)
 	rh.serveTemplate(rw, req, "createPaste", vars, http.StatusOK)
 }
 
+func (rh *requestHandler) rawPaste(rw http.ResponseWriter, req *http.Request) {
+	requestVars := mux.Vars(req)
+	k, err := keyFromPath(requestVars["key"])
+	if err != nil {
+		fmt.Printf("%s %s invalid base64 key: %v\n", req.Method, req.URL.Path, err)
+		rw.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	val, ttl, err := loadPaste(req.Context(), rh.client, k)
+	if err == redis.Nil {
+		fmt.Printf("%s %s key does not exist\n", req.Method, req.URL.Path)
+		rw.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	rw.Header().Add("Content-Type", "text/plain; charset=UTF-8")
+	rw.Header().Add("Cache-Control", fmt.Sprintf("max-age=%d", int(ttl.Seconds())))
+	rw.WriteHeader(http.StatusOK)
+	n, err := io.WriteString(rw, val)
+	if err != nil {
+		fmt.Printf("%s %s ERR writing raw response: %v\n", req.Method, req.URL.Path, err)
+	}
+
+	fmt.Printf("%s %s wrote %d bytes\n", req.Method, req.URL.Path, n)
+}
+
+func loadPaste(ctx context.Context, client *redis.Client, pk pasteKey) (string, time.Duration, error) {
+	val, err := client.Get(ctx, pk.redisKey()).Result()
+	if err == redis.Nil {
+		return "", time.Duration(0), redis.Nil
+	}
+
+	ttl, err := client.TTL(ctx, pk.redisKey()).Result()
+	if err != nil {
+		return "", time.Duration(0), nil
+	}
+
+	return val, ttl, nil
+}
+
 func (rh *requestHandler) showPaste(rw http.ResponseWriter, req *http.Request) {
 	vars := make(map[string]interface{})
 	requestVars := mux.Vars(req)
@@ -86,9 +138,9 @@ func (rh *requestHandler) showPaste(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusNotFound)
 		return
 	}
-	vars["title"] = "Paste"
+	vars["title"] = fmt.Sprintf("Paste %s", k.sumAsString())
 
-	val, err := rh.client.Get(req.Context(), k.redisKey()).Result()
+	val, ttl, err := loadPaste(req.Context(), rh.client, k)
 	if err == redis.Nil {
 		rw.Header().Add("Cache-Control", "no-store, max-age=0")
 		fmt.Printf("%s %s key does not exist\n", req.Method, req.URL.Path)
@@ -102,18 +154,19 @@ func (rh *requestHandler) showPaste(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-
 	vars["paste"] = val
-
-	rw.Header().Add("Cache-Control", "max-age=86400")
+	vars["ttl"] = ttl.String()
+	vars["path"] = k.path()
+	vars["rawPath"] = k.rawPath()
+	rw.Header().Add("Cache-Control", fmt.Sprintf("max-age=%d", int(ttl.Seconds())))
 	rh.serveTemplate(rw, req, "showPaste", vars, http.StatusOK)
 }
 
 func (rh *requestHandler) newPaste(rw http.ResponseWriter, req *http.Request) {
 	vars := make(map[string]interface{})
 	vars["title"] = "Create Paste"
+	vars["maximumSize"] = fmt.Sprintf("%d bytes", rh.pasteSizeLimit)
 
-	rw.WriteHeader(http.StatusOK)
 	rw.Header().Add("Cache-Control", "max-age=86400")
 	rh.serveTemplate(rw, req, "newPaste", vars, http.StatusOK)
 }
@@ -225,6 +278,14 @@ func (rh *requestHandler) serveTemplate(rw http.ResponseWriter, req *http.Reques
 	}
 }
 
+//go:embed robots.txt
+var robotsTxt []byte
+
+func (rh *requestHandler) robots(rw http.ResponseWriter, req *http.Request){
+	rw.WriteHeader(http.StatusOK)
+	io.Copy(rw, bytes.NewReader(robotsTxt))
+}
+
 func GetRouter() (*mux.Router, error){
 	r := mux.NewRouter()
 	rh, err := newRequestHandler()
@@ -234,7 +295,9 @@ func GetRouter() (*mux.Router, error){
 	r.HandleFunc("/", rh.showHome).Methods("GET")
 	r.HandleFunc("/create-paste", rh.createPaste).Methods("POST")
 	r.HandleFunc("/create-paste", rh.newPaste).Methods("GET")
+	r.HandleFunc("/paste/{key}/raw", rh.rawPaste).Methods("GET")
 	r.HandleFunc("/paste/{key}", rh.showPaste).Methods("GET")
+	r.HandleFunc("/robots.txt", rh.robots).Methods("GET")
 
 	return r, nil
 }
