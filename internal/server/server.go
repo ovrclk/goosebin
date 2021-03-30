@@ -72,6 +72,7 @@ func (rh *requestHandler) createPaste(rw http.ResponseWriter, req *http.Request)
 	val, err := rh.client.SetNX(req.Context(), k.redisKey(), paste, rh.pasteTtl).Result()
 	if err != nil {
 		fmt.Printf("%s %s error on redis setnx: %v\n", req.Method, req.URL.Path, err)
+		rh.serveError(rw, req, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -83,7 +84,6 @@ func (rh *requestHandler) createPaste(rw http.ResponseWriter, req *http.Request)
 	}
 
 	vars["title"] = "Paste created"
-	rw.WriteHeader(http.StatusOK)
 	vars["pastePath"] = k.path()
 	rh.serveTemplate(rw, req, "createPaste", vars, http.StatusOK)
 }
@@ -117,8 +117,8 @@ func (rh *requestHandler) rawPaste(rw http.ResponseWriter, req *http.Request) {
 
 func loadPaste(ctx context.Context, client *redis.Client, pk pasteKey) (string, time.Duration, error) {
 	val, err := client.Get(ctx, pk.redisKey()).Result()
-	if err == redis.Nil {
-		return "", time.Duration(0), redis.Nil
+	if err != nil {
+		return "", time.Duration(0), err
 	}
 
 	ttl, err := client.TTL(ctx, pk.redisKey()).Result()
@@ -149,8 +149,8 @@ func (rh *requestHandler) showPaste(rw http.ResponseWriter, req *http.Request) {
 	}
 
 	if err != nil {
-		rw.WriteHeader(http.StatusInternalServerError)
 		fmt.Printf("%s %s error getting key from redis: %v\n", req.Method, req.URL.Path, err)
+		rh.serveError(rw, req, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -265,6 +265,20 @@ func newRequestHandler() (*requestHandler, error) {
 	}
 
 	return result, nil
+}
+
+func (rh *requestHandler) serveError(rw http.ResponseWriter, req *http.Request, code int, err error){
+	fmt.Printf("%s %s failed: %v\n", req.Method, req.URL.Path, err)
+	rw.Header().Add("Cache-Control", "no-store, max-age=0")
+	rw.WriteHeader(code)
+	vars := make(map[string]interface{})
+	vars["title"] = "Server Error"
+	vars["code"] = code
+	vars["path"] = req.URL.Path
+	err = rh.t.ExecuteTemplate(rw, "error", vars)
+	if err != nil {
+		fmt.Printf("Could not render error template: %v\n", err)
+	}
 }
 
 func (rh *requestHandler) serveTemplate(rw http.ResponseWriter, req *http.Request, name string, vars map[string]interface{}, status int) {
