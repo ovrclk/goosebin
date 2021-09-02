@@ -228,13 +228,13 @@ func newRequestHandler() (*requestHandler, error) {
 	}
 
 	var err error
-	redisHost := os.Getenv("REDIS_HOST")
+	redisHost := os.Getenv("REDIS_SERVICE_HOST")
 
 	if len(redisHost) == 0 {
 		redisHost = "localhost"
 	}
 
-	redisPort := os.Getenv("REDIS_PORT")
+	redisPort := os.Getenv("REDIS_SERVICE_PORT")
 	if len(redisPort) == 0 {
 		redisPort = "6379"
 	}
